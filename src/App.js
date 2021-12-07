@@ -1,97 +1,193 @@
-import { useState } from 'react'
-import 'bootstrap/dist/css/bootstrap.min.css';
-import axios from 'axios'
+import React, { useRef, useEffect, useState } from 'react';
+import mapboxgl from 'mapbox-gl';
+import './component/Map.css'
 
-const api = axios.create({
-  baseURL: 'http://localhost:5000'
-})
+mapboxgl.accessToken = 'pk.eyJ1Ijoicm9oaXRpaWMiLCJhIjoiY2t2eGkyanJ3Y2c2azMwczdtOGppa3N5ZyJ9.G4VtowYp1GEpWxvh3nRFVQ';
 
-function App() {
-  const [form, setform] = useState({
-    name: '',
-    mobile: '',
-    email: '',
-    dropdown: '',
-    order: ''
-  })
+const App = () => {
+  const mapContainer = useRef(null);
+  const map = useRef(null);
+  const [lng, setLng] = useState(77.378);
+  const [lat, setLat] = useState(28.624);
+  const [zoom, setZoom] = useState(12);
+  const start = [lng, lat];
 
-  const inputHandler = (e) => {
-    setform({ ...form, [e.target.name]: e.target.value })
+  useEffect(() => {
+    if (map.current) return; // initialize map only once
+    map.current = new mapboxgl.Map({
+      container: mapContainer.current,
+      style: 'mapbox://styles/mapbox/streets-v11',
+      center: [lng, lat],
+      zoom: zoom
+    });
+    map.current.on('move', () => {
+      setLng(map.current.getCenter().lng.toFixed(4));
+      setLat(map.current.getCenter().lat.toFixed(4));
+      setZoom(map.current.getZoom().toFixed(2));
+    });
+    route();
+
+  }, [map.current]);
+
+  const locate = () => {
+    map.current.addControl(
+      new mapboxgl.GeolocateControl({
+        positionOptions: {
+          enableHighAccuracy: true,
+        },
+        // When active the map will receive updates to the device's location as it changes.
+        trackUserLocation: true,
+        style: {
+          right: 10,
+          top: 10
+        },
+        position: 'bottom-left',
+        // Draw an arrow next to the location dot to indicate which direction the device is heading.
+        showUserHeading: true
+      })
+    );
   }
 
-  const submitButton = (e) => {
-    e.preventDefault()
-    console.log(form)
+  const route = () => {
+    locate();
+    map.current.on('load', () => {
+      // make an initial directions request that
+      // starts and ends at the same location
+      // getRoute(start);
 
-    if (form.name === '' || form.mobile === '' || form.email === '' || form.dropdown === '' || form.order === '') {
-      alert('Please fill all the fields')
-    }
-    else {
-      const request = {
-        ...form
+      // Add starting point to the map
+      map.current.addLayer({
+        id: 'point',
+        type: 'circle',
+        source: {
+          type: 'geojson',
+          data: {
+            type: 'FeatureCollection',
+            features: [
+              {
+                type: 'Feature',
+                properties: {},
+                geometry: {
+                  type: 'Point',
+                  coordinates: start
+                }
+              }
+            ]
+          }
+        },
+        paint: {
+          'circle-radius': 10,
+          'circle-color': '#3887be'
+        }
+      });
+
+      map.current.on('click', (event) => {
+        const coords = Object.keys(event.lngLat).map((key) => event.lngLat[key]);
+        const end = {
+          type: 'FeatureCollection',
+          features: [
+            {
+              type: 'Feature',
+              properties: {},
+              geometry: {
+                type: 'Point',
+                coordinates: coords
+              }
+            }
+          ]
+        };
+        if (map.current.getLayer('end')) {
+          map.current.getSource('end').setData(end);
+        } else {
+          map.current.addLayer({
+            id: 'end',
+            type: 'circle',
+            source: {
+              type: 'geojson',
+              data: {
+                type: 'FeatureCollection',
+                features: [
+                  {
+                    type: 'Feature',
+                    properties: {},
+                    geometry: {
+                      type: 'Point',
+                      coordinates: coords
+                    }
+                  }
+                ]
+              }
+            },
+            paint: {
+              'circle-radius': 10,
+              'circle-color': '#f30'
+            }
+          });
+        }
+        getRoute(coords);
+      });
+    });
+  }
+
+  async function getRoute(end) {
+    const query = await fetch(
+      `https://api.mapbox.com/directions/v5/mapbox/cycling/${start[0]},${start[1]};${end[0]},${end[1]}?steps=true&geometries=geojson&access_token=${mapboxgl.accessToken}`,
+      { method: 'GET' }
+    );
+    const json = await query.json();
+    const data = json.routes[0];
+    const route = data.geometry.coordinates;
+    const geojson = {
+      type: 'Feature',
+      properties: {},
+      geometry: {
+        type: 'LineString',
+        coordinates: route
       }
-
-      const db_request = await api.get('/createdb')
-      console.log(db_request)
-      const table_request = await api.get('/createtable')
-      console.log(table_request)
-      const response = await api.post('/insert', request)
-      console.log(response)
-      resetButton()
+    };
+    // if the route already exists on the map, we'll reset it using setData
+    if (map.current.getSource('route')) {
+      map.current.getSource('route').setData(geojson);
     }
-  }
+    // otherwise, we'll make a new request
+    else {
+      map.current.addLayer({
+        id: 'route',
+        type: 'line',
+        source: {
+          type: 'geojson',
+          data: geojson
+        },
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round'
+        },
+        paint: {
+          'line-color': '#3887be',
+          'line-width': 5,
+          'line-opacity': 0.75
+        }
+      });
+    }
+    // get the sidebar and add the instructions
+    const instructions = document.getElementById('instructions');
+    const steps = data.legs[0].steps;
 
-  const resetButton = (e) => {
-    setform({
-      name: '',
-      mobile: '',
-      email: '',
-      dropdown: '',
-      order: ''
-    })
+    let tripInstructions = '';
+    for (const step of steps) {
+      tripInstructions += `<li>${step.maneuver.instruction}</li>`;
+    }
+    instructions.innerHTML = `<p><strong>Trip duration: ${Math.floor(
+      data.duration / 60
+    )} min 🚴 </strong></p><ol>${tripInstructions}</ol>`;
   }
 
   return (
     <>
-      <div className="container mt-3 mb-3">
-        <div className="mb-3">
-          <label htmlFor="exampleFormControlInput1" className="form-label">Name</label>
-          <input type="name" name="name" className="form-control" value={form.name}
-            onChange={inputHandler} id="exampleFormControlInput1" />
-        </div>
-        <div className="mb-3">
-          <label htmlFor="exampleFormControlInput1" className="form-label">Mobile</label>
-          <input type="mobile" value={form.mobile} onChange={inputHandler}
-            name="mobile" className="form-control" id="exampleFormControlInput1" />
-        </div>
-        <div className="mb-3">
-          <label htmlFor="exampleFormControlInput1" className="form-label">Email address</label>
-          <input type="email" value={form.email} onChange={inputHandler}
-            name="email" className="form-control" id="exampleFormControlInput1"
-            placeholder="name@example.com" />
-        </div>
-        <div className="mb-3">
-          <label htmlFor="sel1">Menu</label>
-          <select name="dropdown" value={form.dropdown} className="form-control" id="sel1" onChange={inputHandler}>
-            <option value="Select">Select</option>
-            <option value="Veg Biryani">Veg Biryani</option>
-            <option value="BBQ Chicken Wings">BBQ Chicken Wings</option>
-            <option value="Rasmalai">Rasmlai</option>
-            <option value="Beer">Beer</option>
-          </select>
-        </div>
-        <div className="mb-3">
-          <label htmlFor="exampleFormControlTextarea1" className="form-label">Order Details</label>
-          <textarea name="order" value={form.order} onChange={inputHandler}
-            className="form-control" id="exampleFormControlTextarea1"
-            rows="3"></textarea>
-        </div>
-        <div className="mb-3">
-          <button type='submit' onClick={submitButton} className="btn btn-success">Submit</button>
-          <button type='reset' onClick={resetButton} className="btn btn-danger">Cancel</button>
-        </div>
-      </div>
+      <div ref={mapContainer} className="map-container" />
+      <div id="instructions" className="instructions"></div>
     </>
-  )
-}
+  );
+};
+
 export default App;
